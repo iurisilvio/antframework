@@ -257,7 +257,6 @@ describe('lib/plugins/serverless/lib/Serverless.js', () => {
         };
         logger.attachErrorHandler(errorFn);
         logger.attachHandler(logFn);
-        expect.hasAssertions();
         const basePath = path.resolve(
           __dirname,
           '../../../../support/out/lib/plugins/serverless/lib/Serverless.js'
@@ -272,7 +271,7 @@ describe('lib/plugins/serverless/lib/Serverless.js', () => {
           try {
             fs.ensureDirSync(basePath);
           } finally {
-            (new Template(
+            await (new Template(
               'service',
               'FooService',
               path.resolve(

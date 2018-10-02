@@ -10,8 +10,17 @@ const YError = require('yargs/lib/yerror');
 const AntCli = require('../../../lib/cli/AntCli');
 const logger = require('../../../lib/util/logger');
 const fs = require('fs');
+const yargs = require('yargs');
+const yargsHelper = require('../../../lib/util/yargsHelper');
+const AntError = require('../../../lib/util/AntError');
+const Analytics = require('../../../lib/analytics/Analytics');
 
 describe('lib/cli/AntCli.js', () => {
+  beforeEach(() => {
+    yargs.resetOptions();
+    yargsHelper._resetHandler();
+  });
+
   test('should export "AntCli" class with "execute" method', () => {
     const antCli = new AntCli();
     expect(antCli.constructor.name).toEqual('AntCli');
@@ -60,8 +69,7 @@ describe('lib/cli/AntCli.js', () => {
 
   test('should load custom config with --config option', () => {
     const originalArgv = process.argv;
-    process.argv = [];
-    process.argv.push('--config');
+    process.argv = ['--config'];
     process.argv.push(path.resolve(
       __dirname,
       '../../support/configs/fooPluginConfig/ant.yml'
@@ -86,12 +94,9 @@ describe('lib/cli/AntCli.js', () => {
     }
   });
 
-  test('should run with --config option', (done) => {
-    expect.hasAssertions();
+  test('should run with --config option', () => {
     const originalArgv = process.argv;
-    process.argv = [];
-    process.argv.push('--version');
-    process.argv.push('--config');
+    process.argv = ['--version', '--config'];
     const configPath = path.resolve(
       __dirname,
       '../../support/configs/fooPluginConfig/ant.yml'
@@ -102,35 +107,10 @@ describe('lib/cli/AntCli.js', () => {
     console.log = jest.fn();
     const originalCwd = process.cwd();
     process.chdir(__dirname);
-    process.exit = jest.fn(code => {
-      expect(code).toEqual(0);
-      process.argv = originalArgv;
-      process.exit = originalExit;
-      process.chdir(originalCwd);
-      console.log = originalLog;
-      done();
-    });
-    (new AntCli())._yargs.parse(`--version --config ${configPath}`);
-  });
-
-  test('should fail with --config and no args', () => {
-    const originalArgv = process.argv;
-    process.argv = [];
-    process.argv.push('--config');
-    const originalExit = process.exit;
     process.exit = jest.fn();
-    const originalLog = console.log;
-    console.log = jest.fn();
-    const originalError = console.error;
-    console.error = jest.fn();
-    const originalCwd = process.cwd();
-    process.chdir(__dirname);
     try {
-      (new AntCli()).execute();
-      expect(process.exit).toHaveBeenCalledWith(1);
-      expect(console.error.mock.calls[0][0]).toContain(
-        'Config option requires path argument'
-      );
+      (new AntCli())._yargs.parse(`--version --config ${configPath}`);
+      expect(process.exit).toHaveBeenCalledWith(0);
     } catch (e) {
       throw e;
     } finally {
@@ -138,7 +118,24 @@ describe('lib/cli/AntCli.js', () => {
       process.exit = originalExit;
       process.chdir(originalCwd);
       console.log = originalLog;
-      console.error = originalError;
+    }
+  });
+
+  test('should fail with --config and no args', () => {
+    const handlerMock = jest.spyOn(yargsHelper, 'handleErrorMessage').mockImplementation((msg, err) => {
+      expect(msg).toBe('Config option requires path argument');
+      expect(err).toBeInstanceOf(AntError);
+    });
+    const originalArgv = process.argv;
+    try {
+      process.argv = ['--config'];
+      new AntCli();
+      expect.hasAssertions();
+    } catch (err) {
+      throw err;
+    } finally {
+      handlerMock.mockRestore();
+      process.argv = originalArgv;
     }
   });
 
@@ -197,30 +194,46 @@ describe('lib/cli/AntCli.js', () => {
   });
 
   test('should not load invalid config', () => {
-    const originalExit = process.exit;
-    process.exit = jest.fn();
-    const originalLog = console.log;
-    console.log = jest.fn();
-    const originalError = console.error;
-    console.error = jest.fn();
+    const configPath = path.resolve(__dirname, '../../support/configs/invalidConfig');
+    const handlerMock = jest.spyOn(yargsHelper, 'handleErrorMessage').mockImplementation((msg, err) => {
+      expect(msg).toBe(`Could not load config ${configPath}/ant.yml`);
+      expect(err).toBeInstanceOf(AntError);
+    });
+    const addBreadcrumbMock = jest.spyOn(Analytics, 'addBreadcrumb');
     const originalCwd = process.cwd();
-    process.chdir(path.resolve(
-      __dirname,
-      '../../support/configs/invalidConfig'
-    ));
+    process.chdir(configPath);
     try {
-      (new AntCli()).execute();
-      expect(process.exit).toHaveBeenCalledWith(1);
-      expect(console.error.mock.calls[0][0]).toContain(
-        'Could not load config'
-      );
-    } catch (e) {
-      throw e;
-    } finally {
-      process.exit = originalExit;
-      console.log = originalLog;
-      console.error = originalError;
+      const cli = new AntCli();
+      expect(cli._yargs).toBeUndefined();
+      cli.execute();
+      expect(addBreadcrumbMock).not.toBeCalled();
+    } catch (err) {
+      throw err;
+    } finally  {
+      handlerMock.mockRestore();
       process.chdir(originalCwd);
+    }
+  });
+
+  test('should not execute due to error when loading config', () => {
+    const getConfigMock = jest.spyOn(AntCli.prototype, '_getAntConfig').mockImplementation(() => {
+      throw new Error('Mocked error');
+    });
+    const handlerMock = jest.spyOn(yargsHelper, 'handleErrorMessage').mockImplementation(msg => {
+      expect(msg).toBe('Mocked error');
+    });
+    const addBreadcrumbMock = jest.spyOn(Analytics, 'addBreadcrumb');
+    try {
+      const cli = new AntCli();
+      expect(cli._yargs).toBeUndefined();
+      cli.execute();
+      expect(addBreadcrumbMock).not.toBeCalled();
+    } catch (err) {
+      throw err;
+    } finally  {
+      getConfigMock.mockRestore();
+      handlerMock.mockRestore();
+      addBreadcrumbMock.mockRestore();
     }
   });
 
@@ -251,7 +264,7 @@ describe('lib/cli/AntCli.js', () => {
 
   test('should show stack when using --verbose option', () => {
     const originalArgv = process.argv;
-    process.argv.push('--verbose');
+    process.argv = ['--verbose'];
     const originalExit = process.exit;
     process.exit = jest.fn();
     const originalLog = console.log;
@@ -279,7 +292,7 @@ describe('lib/cli/AntCli.js', () => {
 
   test('should show stack when using -v option', () => {
     const originalArgv = process.argv;
-    process.argv.push('-v');
+    process.argv = ['-v'];
     const originalExit = process.exit;
     process.exit = jest.fn();
     const originalLog = console.log;
@@ -308,21 +321,17 @@ describe('lib/cli/AntCli.js', () => {
   test(
     'should print error when calling with an inexistent command',
     () => {
-      const originalExit = process.exit;
-      process.exit = jest.fn();
-      const originalError = console.error;
-      console.error = jest.fn();
+      const handlerMock = jest.spyOn(yargsHelper, 'handleErrorMessage').mockImplementation((msg, err) => {
+        expect(msg).toBe('Unknown command: bar');
+        expect(err).toBeUndefined();
+      });
       try {
-        (new AntCli())._yargs.parse('foo');
-        expect(process.exit).toHaveBeenCalledWith(1);
-        expect(console.error.mock.calls[0][0]).toContain(
-          'Fatal => Unknown command: foo'
-        );
-      } catch (e) {
-        throw e;
+        (new AntCli())._yargs.parse('bar');
+        expect.hasAssertions();
+      } catch (err) {
+        throw err;
       } finally {
-        process.exit = originalExit;
-        console.error = originalError;
+        handlerMock.mockRestore();
       }
     }
   );
@@ -330,21 +339,18 @@ describe('lib/cli/AntCli.js', () => {
   test(
     'should suggest commands',
     () => {
-      const originalExit = process.exit;
-      process.exit = jest.fn();
-      const originalError = console.error;
-      console.error = jest.fn();
+      const trackErrorMock = jest.spyOn(yargsHelper, 'handleErrorMessage').mockImplementationOnce((msg, err) => {
+        expect(msg).toBe('Did you mean create?');
+        expect(err).toBeUndefined();
+        yargsHelper.setErrorHandled();
+      });
       try {
         (new AntCli())._yargs.parse('creat');
-        expect(process.exit).toHaveBeenCalledWith(1);
-        expect(console.error.mock.calls[0][0]).toContain(
-          'Fatal => Did you mean create?'
-        );
-      } catch (e) {
-        throw e;
+        expect.hasAssertions();
+      } catch (err) {
+        throw err;
       } finally {
-        process.exit = originalExit;
-        console.error = originalError;
+        trackErrorMock.mockRestore();
       }
     }
   );
@@ -352,38 +358,47 @@ describe('lib/cli/AntCli.js', () => {
   test(
     'should throw error when something goes wrong',
     () => {
-      expect(() => (new AntCli())._yargs.command(
-        'foo',
-        'foo description',
-        () => {},
-        () => { throw new YError('Something went wrong'); }
-      ).parse('foo')).toThrowError('Something went wrong');
+      const handlerMock = jest.spyOn(yargsHelper, 'handleErrorMessage').mockImplementation((msg, err, command) => {
+        expect(msg).toBe('Something went wrong');
+        expect(err).toBeInstanceOf(YError);
+        expect(err.message).toBe('Something went wrong');
+        expect(command).toBeUndefined();
+      });
+      try {
+        (new AntCli())._yargs.command(
+          'foo',
+          'foo description',
+          () => {},
+          () => { throw new YError('Something went wrong'); }
+        ).parse('foo');
+        expect.hasAssertions();
+      } catch (err) {
+        throw err;
+      } finally {
+        handlerMock.mockRestore();
+      }
     }
   );
 
   test(
     'should throw friendly error when not passing required arg to option',
     () => {
-      const originalExit = process.exit;
-      process.exit = jest.fn();
-      const originalError = console.error;
-      console.error = jest.fn();
+      const commandErr = new YError('Not enough arguments following: ');
+      const handlerMock = jest.spyOn(yargsHelper, 'handleErrorMessage').mockImplementation((msg, err) => {
+        expect(msg).toBe('Not enough arguments following: ');
+        expect(err).toBe(commandErr);
+      });
       try {
         (new AntCli())._yargs.command(
           'foo',
           'foo description',
           { option: { requiresArg: true }},
-          () => { throw new YError('Not enough arguments following: '); }
+          () => { throw commandErr; }
         ).parse('foo');
-        expect(process.exit).toHaveBeenCalledWith(1);
-        expect(console.error.mock.calls[0][0]).toContain(
-          'Not enough arguments following: '
-        );
-      } catch (e) {
-        throw e;
+      } catch (err) {
+        throw err;
       } finally {
-        process.exit = originalExit;
-        console.error = originalError;
+        handlerMock.mockRestore();
       }
     }
   );
@@ -391,22 +406,25 @@ describe('lib/cli/AntCli.js', () => {
   test(
     'should attach console.log to logger handlers when using --verbose option',
     () => {
-      expect.hasAssertions();
-      const originalExit = process.exit;
-      process.exit = jest.fn();
-      const originalError = console.error;
-      console.error = jest.fn();
+      const originalArgv = process.argv;
+      process.argv = ['foo', '--verbose'];
+      const attachHandlerMock = jest.spyOn(logger, 'attachHandler');
+      const attachErrorHandlerMock = jest.spyOn(logger, 'attachErrorHandler');
       try {
-        (new AntCli())._yargs.parse('foo --verbose');
-        expect(process.exit).toHaveBeenCalledWith(1);
-        expect(logger._handlers).toEqual(expect.any(Set));
-        expect(logger._handlers.size).toEqual(1);
-        expect(Array.from(logger._handlers.values())[0]).toEqual(console.log);
-      } catch (e) {
-        throw e;
+        new AntCli()._yargs.command(
+          'foo',
+          'foo description',
+          { option: { requiresArg: true }},
+          () => {}
+        ).parse('foo --verbose');
+        expect(attachHandlerMock).toHaveBeenCalledWith(console.log);
+        expect(attachErrorHandlerMock).toHaveBeenCalledWith(console.error);
+      } catch (err) {
+        throw err;
       } finally {
-        process.exit = originalExit;
-        console.error = originalError;
+        attachHandlerMock.mockRestore();
+        attachErrorHandlerMock.mockRestore();
+        process.argv = originalArgv;
       }
     }
   );
